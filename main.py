@@ -3,138 +3,115 @@ import requests
 import pandas as pd
 from io import StringIO
 from datetime import datetime, timedelta
-import urllib.parse # EUC-KR 인코딩용 표준 라이브러리
+from bs4 import BeautifulSoup
 
 # 텔레그램 설정값 불러오기 (GitHub Secrets)
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 def send_telegram_message(text):
-    """텔레그램 메시지를 전송하는 함수"""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("텔레그램 설정이 완료되지 않았습니다.")
+        print("텔레그램 설정이 누락되었습니다.")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": text,
-        "parse_mode": "HTML"
-    }
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"}
     try:
-        response = requests.post(url, json=payload, timeout=10)
-        if response.status_code == 200:
-            print("텔레그램 전송 성공")
-        else:
-            print(f"텔레그램 전송 실패: {response.text}")
+        requests.post(url, json=payload, timeout=10)
     except Exception as e:
         print(f"텔레그램 전송 중 오류 발생: {e}")
 
 def get_official_court_data(start_date, end_date):
-    """
-    대한민국 법원 공식 경매 사이트(courtauction.go.kr)에서 
-    수원지방법원 관할의 전체 아파트 경매 정보를 일괄 수집한 후 정밀 선별합니다.
-    """
     items = []
     session = requests.Session()
     
+    # 실제 브라우저와 100% 동일하게 헤더 구성
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+        'Accept-Language': 'ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7',
+        'Connection': 'keep-alive',
+        'Content-Type': 'application/x-www-form-urlencoded',
         'Origin': 'https://www.courtauction.go.kr',
         'Referer': 'https://www.courtauction.go.kr/InitMulSrch.laf',
-        'Content-Type': 'application/x-www-form-urlencoded',
     }
     
     try:
-        print("대법원 메인 세션을 연결하는 중...")
-        # 1. 세션 쿠키 획득
+        print("1. 대법원 메인 서버 접속 (WMONID 보안 쿠키 발급 중)...")
+        session.get('https://www.courtauction.go.kr/', headers=headers, timeout=10)
+        
+        print("2. 경매 검색 페이지 접속 (JSESSIONID 세션 연결 중)...")
         session.get('https://www.courtauction.go.kr/InitMulSrch.laf', headers=headers, timeout=10)
         
-        # 2. 수원지방법원 관할 전체 아파트를 조회하는 대법원 규격 폼 구성
-        data = {
-            'bubwLocGubun': '1',              # 1: 법원별 검색 옵션 (가장 확실하고 누락이 없습니다)
-            'jiwonNm': '수원지방법원',        # 관할 법원 지정 (이후 EUC-KR로 인코딩되어 전송됨)
-            'jpDeptCd': '000000',
-            'daepyoSidoCd': '',
-            'daepyoSiguCd': '',
-            'daepyoDongCd': '',
-            'notifyLoc': 'on',
-            'rd1Cd': '',
-            'rd2Cd': '',
-            'realVowel': '',
-            'rd3Rd4Cd': '',
-            'notifyRealRoad': 'on',
-            'saYear': '',
-            'saSer': '',
-            'ipchalGbncd': '000331',          # 기일입찰 방식 고정
-            'termStartDt': start_date,        # 조회 시작일 (당일)
-            'termEndDt': end_date,            # 조회 종료일 (2주 뒤)
-            'lclsUtilCd': '0000802',          # 건물 > 주거용건물
-            'mclsUtilCd': '000080201',        # 공동주택
-            'sclsUtilCd': '00008020104',      # 아파트
-            'gamEvalAmtGuganMin': '',
-            'gamEvalAmtGuganMax': '',
-            'notifyMinMgakPrcMin': '',
-            'notifyMinMgakPrcMax': '',
-            'areaGuganMin': '',
-            'areaGuganMax': '',
-            'yuchalCntGuganMin': '',
-            'yuchalCntGuganMax': '',
-            'notifyMinMgakPrcRateMin': '',
-            'notifyMinMgakPrcRateMax': '',
-            'srchJogKindcd': '',
-            'mvRealGbncd': '00031R',
-            'srnID': 'PNO102001',
-            '_NAVI_CMD': '',
-            '_NAVI_SRNID': '',
-            '_SRCH_SRNID': 'PNO102001',
-            '_CUR_CMD': 'InitMulSrch.laf',
-            '_CUR_SRNID': 'PNO102001',
-            '_NEXT_CMD': 'RetrieveRealEstMulDetailList.laf',
-            '_NEXT_SRNID': 'PNO102002',
-            '_PRE_SRNID': '',
-            '_LOGOUT_CHK': '',
-            '_FORM_YN': 'Y'
-        }
+        print(f"3. 수원지방법원 관할 {start_date} ~ {end_date} 기일 아파트 정보를 요청합니다...")
         
-        # [핵심 디버깅 포인트] 
-        # 파이썬 requests는 기본적으로 폼 데이터를 UTF-8로 인코딩합니다.
-        # 법원 사이트의 한글 처리를 통과하려면 반드시 아래처럼 수동으로 EUC-KR로 url인코딩해서 보냐야 정상 작동합니다.
-        encoded_data = urllib.parse.urlencode(data, encoding='euc-kr')
+        # 파이썬의 자동 인코딩 오류를 원천 차단하기 위해 대법원이 쓰는 EUC-KR Raw String 폼 데이터를 직접 꽂아 넣습니다.
+        data_string = (
+            "bubwLocGubun=1&"
+            "jiwonNm=%BC%F6%BF%F8%C1%F6%B9%E6%B9%FD%BF%F8&" # '수원지방법원'
+            "jpDeptCd=000000&"
+            "daepyoSidoCd=&"
+            "daepyoSiguCd=&"
+            "daepyoDongCd=&"
+            "notifyLoc=on&"
+            "notifyRealRoad=on&"
+            "ipchalGbncd=000331&"
+            f"termStartDt={start_date}&"
+            f"termEndDt={end_date}&"
+            "lclsUtilCd=0000802&"
+            "mclsUtilCd=000080201&"
+            "sclsUtilCd=00008020104&"
+            "_FORM_YN=Y&"
+            "_CUR_CMD=InitMulSrch.laf&"
+            "_CUR_SRNID=PNO102001&"
+            "_NEXT_CMD=RetrieveRealEstMulDetailList.laf&"
+            "_NEXT_SRNID=PNO102002"
+        )
         
-        print(f"수원지방법원 관할 {start_date} ~ {end_date} 기일 아파트 경매 정보를 수집합니다...")
         response = session.post(
             'https://www.courtauction.go.kr/RetrieveRealEstMulDetailList.laf',
             headers=headers,
-            data=encoded_data, # EUC-KR 바이트 전송
+            data=data_string,
             timeout=15
         )
         response.encoding = 'euc-kr'
         
-        # 3. 만약 대법원 방화벽 등에 완전히 IP 차단이 일어난 경우 디버깅용 로그 남기기
-        if "자동입력방지" in response.text or "안전한 서비스 이용" in response.text or "보안문자" in response.text:
-            print("🚨 대법원 방화벽이 가상 서버의 IP를 일시적으로 차단하여 보안 인증 화면을 띄웠습니다.")
-            return items
-            
-        # 4. Pandas로 HTML 테이블 파싱
+        # ----------------- [스마트 진단 및 예외 처리] -----------------
         try:
             dfs = pd.read_html(StringIO(response.text))
-        except ValueError:
-            print("테이블 데이터를 찾지 못했습니다. (조회 결과가 없거나 페이지 파싱 실패)")
-            return items
             
-        if not dfs:
-            return items
-            
-        df = None
-        for table in dfs:
-            if any('사건번호' in str(col) for col in table.columns):
-                df = table
-                break
+            if not dfs:
+                raise ValueError("표(table)를 찾을 수 없음")
                 
-        if df is None or df.empty:
+            df = None
+            for table in dfs:
+                if any('사건번호' in str(col) for col in table.columns):
+                    df = table
+                    break
+                    
+            if df is None or df.empty:
+                raise ValueError("유효한 사건번호 표를 찾을 수 없음")
+                
+        except ValueError:
+            # 대법원 서버가 물건 표 대신 차단 화면이나 오류를 띄웠을 경우 그 내용을 뽑아서 텔레그램으로 쏩니다.
+            soup = BeautifulSoup(response.text, 'html.parser')
+            for script in soup(["script", "style"]):
+                script.extract()
+            text_preview = soup.get_text(separator=' ', strip=True)[:300]
+            
+            if "결과가 없습니다" in text_preview or "사건이 없습니다" in text_preview:
+                print("조건에 맞는 물건이 0건입니다.")
+                return items
+                
+            error_msg = (
+                f"❌ <b>대법원 크롤링 서버 응답 분석 결과</b>\n"
+                f"정상적인 표를 불러오지 못했습니다. 아래 응답을 확인해주세요.\n\n"
+                f"[서버 화면에 적힌 실제 텍스트]:\n{text_preview}"
+            )
+            send_telegram_message(error_msg)
+            print("에러 발생: 텔레그램으로 대법원 서버의 실제 응답 텍스트를 전송했습니다.")
             return items
             
-        # 열 매핑 찾기
+        # 정상적으로 표를 찾은 경우 필터링 작업 시작
         col_case = [c for c in df.columns if '사건번호' in str(c)][0]
         col_detail = [c for c in df.columns if '소재지' in str(c)][0]
         col_price = [c for c in df.columns if '감정' in str(c) or '최저' in str(c)][0]
@@ -146,15 +123,15 @@ def get_official_court_data(start_date, end_date):
             case_text = str(row.get(col_case, ''))
             detail_text = str(row.get(col_detail, ''))
             
-            # [필터링 고도화] 수원지방법원 관할 전체 중 '수원시 영통구' 및 '용인시 수지구'가 주소에 포함된 매물만 선별합니다.
+            # 수원지방법원 전체 매물 중 '영통구'와 '수지구'만 정확하게 낚아챕니다.
             if ('수원시 영통구' in detail_text) or ('용인시 수지구' in detail_text):
                 case_raw = case_text.split()
                 case_num = case_raw[0] if case_raw else "확인 필요"
                 
                 address = " ".join(detail_text.split())
-                
                 price_text = " ".join(str(row.get(col_price, '')).split())
                 prices = price_text.split()
+                
                 appraised = prices[0] if len(prices) > 0 else "정보 없음"
                 minimum = prices[1] if len(prices) > 1 else "정보 없음"
                 
@@ -173,24 +150,22 @@ def get_official_court_data(start_date, end_date):
                 })
                 
     except Exception as e:
-        print(f"크롤링 실행 중 예외 발생: {e}")
+        print(f"시스템 시스템 에러: {e}")
+        send_telegram_message(f"❌ <b>파이썬 코드 시스템 에러</b>\n{str(e)}")
         
     return items
 
 def main():
-    print("대한민국 법원 공식 경매 정보를 다이렉트로 수집합니다...")
-    
-    # 한국 표준시(KST) 조회 기간 계산 (당일 ~ 2주 뒤)
     now_utc = datetime.utcnow()
     now_kst = now_utc + timedelta(hours=9)
     
-    start_date = now_kst.strftime('%Y.%m.%d')                      # 오늘 날짜
-    end_date = (now_kst + timedelta(days=14)).strftime('%Y.%m.%d')  # 2주 뒤 날짜
+    start_date = now_kst.strftime('%Y.%m.%d')
+    end_date = (now_kst + timedelta(days=14)).strftime('%Y.%m.%d')
     
     target_items = get_official_court_data(start_date, end_date)
     
     if not target_items:
-        send_telegram_message(f"🔍 [{start_date} ~ {end_date}] 기간 내에 수원 영통 / 용인 수지 지역의 아파트 경매 진행 물건이 존재하지 않습니다.")
+        # 스마트 진단에서 이미 에러 메시지를 보냈다면 중복 발송 생략
         return
         
     message = f"<b>📢 법원 경매 정보 ({start_date} ~ {end_date} 기일)</b>\n"
