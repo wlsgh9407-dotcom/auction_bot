@@ -37,6 +37,7 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Origin': 'https://www.courtauction.go.kr',
         'Referer': 'https://www.courtauction.go.kr/InitMulSrch.laf',
+        'Content-Type': 'application/x-www-form-urlencoded',
     }
     
     try:
@@ -45,26 +46,51 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
         # 1. 세션 쿠키 획득
         session.get('https://www.courtauction.go.kr/InitMulSrch.laf', headers=headers, timeout=10)
         
-        # 2. POST 요청 데이터 구성 (기간, 지역, 아파트 상세 분류 포함)
+        # 2. [정밀 타겟팅] 브라우저와 100% 동일하게 모든 숨겨진 폼 필드를 매핑합니다.
         data = {
-            'bubwLocGubun': '2',          # 2: 지역구분 검색 옵션
-            'daepyoSidoCd': '41',         # 41: 경기도
-            'daepyoSiguCd': sigungu_code, # 41117(영통구) 또는 41465(수지구)
-            'ipchalGbncd': '000331',      # 기일입찰 방식 고정
-            
-            # [날짜 지정 파라미터 - 당일 ~ 2주 뒤]
-            'termStartDt': start_date,    # 예: '2026.05.29'
-            'termEndDt': end_date,        # 예: '2026.06.12'
-            
-            # [용도 필터링: 건물 > 주거용건물 > 아파트]
-            'lclsUtilCd': '0000802',      # 주거용건물
-            'mclsUtilCd': '000080201',    # 공동주택
-            'sclsUtilCd': '00008020104',  # 아파트
-            
+            'bubwLocGubun': '2',              # 2: 소재지주소별 검색 옵션
+            'jiwonNm': '',
+            'jpDeptCd': '000000',
+            'daepyoSidoCd': '41',             # 41: 경기도
+            'daepyoSiguCd': sigungu_code,     # 41117(영통구) 또는 41465(수지구)
+            'daepyoDongCd': '',
+            'notifyLoc': 'on',                # 지번주소 검색 활성화
+            'rd1Cd': '',
+            'rd2Cd': '',
+            'realVowel': '',
+            'rd3Rd4Cd': '',
+            'notifyRealRoad': 'on',           # 도로명주소 검색 활성화
+            'saYear': '',
+            'saSer': '',
+            'ipchalGbncd': '000331',          # 기일입찰 방식 고정
+            'termStartDt': start_date,        # 조회 시작일 (당일)
+            'termEndDt': end_date,            # 조회 종료일 (2주 뒤)
+            'lclsUtilCd': '0000802',          # 건물 > 주거용건물
+            'mclsUtilCd': '000080201',        # 공동주택
+            'sclsUtilCd': '00008020104',      # 아파트
+            'gamEvalAmtGuganMin': '',
+            'gamEvalAmtGuganMax': '',
+            'notifyMinMgakPrcMin': '',
+            'notifyMinMgakPrcMax': '',
+            'areaGuganMin': '',
+            'areaGuganMax': '',
+            'yuchalCntGuganMin': '',
+            'yuchalCntGuganMax': '',
+            'notifyMinMgakPrcRateMin': '',
+            'notifyMinMgakPrcRateMax': '',
+            'srchJogKindcd': '',
             'mvRealGbncd': '00031R',
-            '_FORM_YN': 'Y',
+            'srnID': 'PNO102001',
+            '_NAVI_CMD': '',
+            '_NAVI_SRNID': '',
+            '_SRCH_SRNID': 'PNO102001',
             '_CUR_CMD': 'InitMulSrch.laf',
-            '_NEXT_CMD': 'RetrieveRealEstMulDetailList.laf'
+            '_CUR_SRNID': 'PNO102001',
+            '_NEXT_CMD': 'RetrieveRealEstMulDetailList.laf',
+            '_NEXT_SRNID': 'PNO102002',
+            '_PRE_SRNID': '',
+            '_LOGOUT_CHK': '',
+            '_FORM_YN': 'Y'
         }
         
         # 3. 실시간 경매 상세 정보 목록 요청
@@ -76,12 +102,12 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
         )
         response.encoding = 'euc-kr'
         
-        # HTML 텍스트에 "결과가 없습니다" 류의 문구가 있으면 조회 결과가 없는 것이므로 즉시 리턴
+        # "결과가 없습니다" 안내 문구가 들어있다면 물건이 없는 것이므로 즉시 리턴
         if "결과가 없습니다" in response.text or "사건이 없습니다" in response.text:
             print(f"{city} {district} 지역에 해당 기간 내 아파트 경매 물건이 없습니다. (0건)")
             return items
         
-        # 4. Pandas로 HTML 테이블 파싱 (StringIO 사용)
+        # 4. Pandas로 HTML 테이블 파싱
         try:
             dfs = pd.read_html(StringIO(response.text))
         except ValueError:
@@ -100,7 +126,7 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
         if df is None or df.empty:
             return items
             
-        # 컬럼 이름 찾기
+        # 열 매핑 찾기
         col_case = [c for c in df.columns if '사건번호' in str(c)][0]
         col_detail = [c for c in df.columns if '소재지' in str(c)][0]
         col_price = [c for c in df.columns if '감정' in str(c) or '최저' in str(c)][0]
@@ -112,6 +138,7 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
             case_text = str(row.get(col_case, ''))
             detail_text = str(row.get(col_detail, ''))
             
+            # 검색결과 재검증
             if district in detail_text:
                 case_raw = case_text.split()
                 case_num = case_raw[0] if case_raw else "확인 필요"
@@ -145,13 +172,12 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
 def main():
     print("대한민국 법원 공식 경매 정보를 다이렉트로 수집합니다...")
     
-    # 1. 한국 표준시(KST)를 기준으로 당일부터 2주 후까지의 기간을 계산합니다.
-    # (GitHub Actions 가상 컴퓨터는 기본적으로 UTC 표준시를 따르므로, 시간대 오차를 방지하기 위해 강제로 KST 기준 날짜를 계산합니다.)
+    # 한국 표준시(KST) 기준으로 당일부터 2주 뒤까지의 조회 기간 계산
     now_utc = datetime.utcnow()
     now_kst = now_utc + timedelta(hours=9)
     
-    start_date = now_kst.strftime('%Y.%m.%d')                      # 오늘 날짜 (YYYY.MM.DD)
-    end_date = (now_kst + timedelta(days=14)).strftime('%Y.%m.%d')  # 2주 뒤 날짜 (YYYY.MM.DD)
+    start_date = now_kst.strftime('%Y.%m.%d')                      # 오늘 날짜
+    end_date = (now_kst + timedelta(days=14)).strftime('%Y.%m.%d')  # 2주 뒤 날짜
     
     target_items = []
     # 수원시 영통구(41117) 및 용인시 수지구(41465) 경매 아파트를 수집합니다.
