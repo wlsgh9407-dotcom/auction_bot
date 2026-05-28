@@ -3,6 +3,7 @@ import requests
 import pandas as pd
 from io import StringIO
 from datetime import datetime, timedelta
+import urllib.parse # EUC-KR 인코딩용 표준 라이브러리
 
 # 텔레그램 설정값 불러오기 (GitHub Secrets)
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
@@ -28,8 +29,11 @@ def send_telegram_message(text):
     except Exception as e:
         print(f"텔레그램 전송 중 오류 발생: {e}")
 
-def get_official_court_data(sigungu_code, city, district, start_date, end_date):
-    """대한민국 법원 공식 경매 사이트(courtauction.go.kr)에서 지정된 구역과 기간 내의 아파트 경매 정보를 직접 수집합니다."""
+def get_official_court_data(start_date, end_date):
+    """
+    대한민국 법원 공식 경매 사이트(courtauction.go.kr)에서 
+    수원지방법원 관할의 전체 아파트 경매 정보를 일괄 수집한 후 정밀 선별합니다.
+    """
     items = []
     session = requests.Session()
     
@@ -41,18 +45,17 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
     }
     
     try:
-        print(f"대법원 시스템에서 {city} {district} ({start_date} ~ {end_date}) 경매 데이터를 요청하는 중...")
-        
+        print("대법원 메인 세션을 연결하는 중...")
         # 1. 세션 쿠키 획득
         session.get('https://www.courtauction.go.kr/InitMulSrch.laf', headers=headers, timeout=10)
         
-        # 2. 브라우저 검색 폼 데이터 구성
+        # 2. 수원지방법원 관할 전체 아파트를 조회하는 대법원 규격 폼 구성
         data = {
-            'bubwLocGubun': '2',              # 2: 소재지주소별 검색 옵션
-            'jiwonNm': '',
+            'bubwLocGubun': '1',              # 1: 법원별 검색 옵션 (가장 확실하고 누락이 없습니다)
+            'jiwonNm': '수원지방법원',        # 관할 법원 지정 (이후 EUC-KR로 인코딩되어 전송됨)
             'jpDeptCd': '000000',
-            'daepyoSidoCd': '41',             # 41: 경기도
-            'daepyoSiguCd': sigungu_code,     # 41117(영통구) 또는 41465(수지구)
+            'daepyoSidoCd': '',
+            'daepyoSiguCd': '',
             'daepyoDongCd': '',
             'notifyLoc': 'on',
             'rd1Cd': '',
@@ -93,20 +96,30 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
             '_FORM_YN': 'Y'
         }
         
-        # 3. 실시간 경매 상세 정보 목록 요청
+        # [핵심 디버깅 포인트] 
+        # 파이썬 requests는 기본적으로 폼 데이터를 UTF-8로 인코딩합니다.
+        # 법원 사이트의 한글 처리를 통과하려면 반드시 아래처럼 수동으로 EUC-KR로 url인코딩해서 보냐야 정상 작동합니다.
+        encoded_data = urllib.parse.urlencode(data, encoding='euc-kr')
+        
+        print(f"수원지방법원 관할 {start_date} ~ {end_date} 기일 아파트 경매 정보를 수집합니다...")
         response = session.post(
             'https://www.courtauction.go.kr/RetrieveRealEstMulDetailList.laf',
             headers=headers,
-            data=data,
+            data=encoded_data, # EUC-KR 바이트 전송
             timeout=15
         )
         response.encoding = 'euc-kr'
         
-        # 4. Pandas로 HTML 테이블 파싱 (사이드바 글자 필터링 버그 코드 제거 완료)
+        # 3. 만약 대법원 방화벽 등에 완전히 IP 차단이 일어난 경우 디버깅용 로그 남기기
+        if "자동입력방지" in response.text or "안전한 서비스 이용" in response.text or "보안문자" in response.text:
+            print("🚨 대법원 방화벽이 가상 서버의 IP를 일시적으로 차단하여 보안 인증 화면을 띄웠습니다.")
+            return items
+            
+        # 4. Pandas로 HTML 테이블 파싱
         try:
             dfs = pd.read_html(StringIO(response.text))
         except ValueError:
-            print(f"{city} {district} 지역에 해당 기간 내 아파트 경매 물건이 없습니다. (0건)")
+            print("테이블 데이터를 찾지 못했습니다. (조회 결과가 없거나 페이지 파싱 실패)")
             return items
             
         if not dfs:
@@ -133,8 +146,8 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
             case_text = str(row.get(col_case, ''))
             detail_text = str(row.get(col_detail, ''))
             
-            # 검색결과 정밀 매칭
-            if district in detail_text:
+            # [필터링 고도화] 수원지방법원 관할 전체 중 '수원시 영통구' 및 '용인시 수지구'가 주소에 포함된 매물만 선별합니다.
+            if ('수원시 영통구' in detail_text) or ('용인시 수지구' in detail_text):
                 case_raw = case_text.split()
                 case_num = case_raw[0] if case_raw else "확인 필요"
                 
@@ -160,24 +173,21 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
                 })
                 
     except Exception as e:
-        print(f"{city} {district} 법원 정보 크롤링 중 예외 발생: {e}")
+        print(f"크롤링 실행 중 예외 발생: {e}")
         
     return items
 
 def main():
     print("대한민국 법원 공식 경매 정보를 다이렉트로 수집합니다...")
     
-    # 한국 표준시(KST) 기준으로 당일부터 2주 뒤까지의 조회 기간 계산
+    # 한국 표준시(KST) 조회 기간 계산 (당일 ~ 2주 뒤)
     now_utc = datetime.utcnow()
     now_kst = now_utc + timedelta(hours=9)
     
-    start_date = now_kst.strftime('%Y.%m.%d')                      # 오늘 날짜 (2026.05.29)
-    end_date = (now_kst + timedelta(days=14)).strftime('%Y.%m.%d')  # 2주 뒤 날짜 (2026.06.12)
+    start_date = now_kst.strftime('%Y.%m.%d')                      # 오늘 날짜
+    end_date = (now_kst + timedelta(days=14)).strftime('%Y.%m.%d')  # 2주 뒤 날짜
     
-    target_items = []
-    # 수원시 영통구(41117) 및 용인시 수지구(41465) 경매 아파트를 수집합니다.
-    target_items.extend(get_official_court_data("41117", "수원시", "영통구", start_date, end_date))
-    target_items.extend(get_official_court_data("41465", "용인시", "수지구", start_date, end_date))
+    target_items = get_official_court_data(start_date, end_date)
     
     if not target_items:
         send_telegram_message(f"🔍 [{start_date} ~ {end_date}] 기간 내에 수원 영통 / 용인 수지 지역의 아파트 경매 진행 물건이 존재하지 않습니다.")
