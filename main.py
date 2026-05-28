@@ -46,7 +46,7 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
         # 1. 세션 쿠키 획득
         session.get('https://www.courtauction.go.kr/InitMulSrch.laf', headers=headers, timeout=10)
         
-        # 2. [정밀 타겟팅] 브라우저와 100% 동일하게 모든 숨겨진 폼 필드를 매핑합니다.
+        # 2. 브라우저 검색 폼 데이터 구성
         data = {
             'bubwLocGubun': '2',              # 2: 소재지주소별 검색 옵션
             'jiwonNm': '',
@@ -54,12 +54,12 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
             'daepyoSidoCd': '41',             # 41: 경기도
             'daepyoSiguCd': sigungu_code,     # 41117(영통구) 또는 41465(수지구)
             'daepyoDongCd': '',
-            'notifyLoc': 'on',                # 지번주소 검색 활성화
+            'notifyLoc': 'on',
             'rd1Cd': '',
             'rd2Cd': '',
             'realVowel': '',
             'rd3Rd4Cd': '',
-            'notifyRealRoad': 'on',           # 도로명주소 검색 활성화
+            'notifyRealRoad': 'on',
             'saYear': '',
             'saSer': '',
             'ipchalGbncd': '000331',          # 기일입찰 방식 고정
@@ -102,12 +102,7 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
         )
         response.encoding = 'euc-kr'
         
-        # "결과가 없습니다" 안내 문구가 들어있다면 물건이 없는 것이므로 즉시 리턴
-        if "결과가 없습니다" in response.text or "사건이 없습니다" in response.text:
-            print(f"{city} {district} 지역에 해당 기간 내 아파트 경매 물건이 없습니다. (0건)")
-            return items
-        
-        # 4. Pandas로 HTML 테이블 파싱
+        # 4. Pandas로 HTML 테이블 파싱 (사이드바 글자 필터링 버그 코드 제거 완료)
         try:
             dfs = pd.read_html(StringIO(response.text))
         except ValueError:
@@ -138,7 +133,7 @@ def get_official_court_data(sigungu_code, city, district, start_date, end_date):
             case_text = str(row.get(col_case, ''))
             detail_text = str(row.get(col_detail, ''))
             
-            # 검색결과 재검증
+            # 검색결과 정밀 매칭
             if district in detail_text:
                 case_raw = case_text.split()
                 case_num = case_raw[0] if case_raw else "확인 필요"
@@ -176,8 +171,8 @@ def main():
     now_utc = datetime.utcnow()
     now_kst = now_utc + timedelta(hours=9)
     
-    start_date = now_kst.strftime('%Y.%m.%d')                      # 오늘 날짜
-    end_date = (now_kst + timedelta(days=14)).strftime('%Y.%m.%d')  # 2주 뒤 날짜
+    start_date = now_kst.strftime('%Y.%m.%d')                      # 오늘 날짜 (2026.05.29)
+    end_date = (now_kst + timedelta(days=14)).strftime('%Y.%m.%d')  # 2주 뒤 날짜 (2026.06.12)
     
     target_items = []
     # 수원시 영통구(41117) 및 용인시 수지구(41465) 경매 아파트를 수집합니다.
