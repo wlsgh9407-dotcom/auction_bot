@@ -1,17 +1,16 @@
 import os
 import requests
-from bs4 import BeautifulSoup
+import pandas as pd
 
-# 텔레그램 설정값 불러오기 (GitHub Secrets에 등록한 값)
+# 텔레그램 설정값 불러오기 (GitHub Secrets)
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID')
 
 def send_telegram_message(text):
     """텔레그램 메시지를 전송하는 함수"""
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("텔레그램 토큰 또는 채팅 ID가 설정되지 않았습니다.")
+        print("텔레그램 설정이 완료되지 않았습니다.")
         return
-    
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -21,91 +20,98 @@ def send_telegram_message(text):
     try:
         response = requests.post(url, json=payload, timeout=10)
         if response.status_code == 200:
-            print("텔레그램 메시지 전송 성공")
+            print("텔레그램 전송 성공")
         else:
             print(f"텔레그램 전송 실패: {response.text}")
     except Exception as e:
-        print(f"텔레그램 전송 중 예외 발생: {e}")
+        print(f"텔레그램 전송 중 오류 발생: {e}")
 
-def scrape_auction_data():
-    """
-    경매 정보를 수집하는 함수입니다.
-    대상 사이트의 차단이나 일시적인 네트워크 오류 시에도 
-    자동화 프로세스가 아예 죽지 않도록 예외 처리가 적용되어 있습니다.
-    """
-    results = []
+def scrape_real_auction_data():
+    """다음 부동산 경매 페이지에서 실시간 경매 데이터를 가져와 필터링합니다."""
+    items = []
     
-    # 1. 크롤링 대상 사이트 주소와 브라우저인 척하기 위한 헤더 설정
-    # (여기서는 예시 구조로 구현하며, 추후 특정 무료 사이트로 고정 시 태그 구조를 맞춰야 합니다)
-    url = "https://example-auction-site.com/list" 
+    # 경기 지역(addr1=%B0%E2%B1%E2), 아파트(var_kind=111), 결과: 진행/유찰/신건 검색 URL
+    url = (
+        "https://auction.realestate.daum.net/auction/search_detail.php"
+        "?addr1=%B0%E2%B1%E2"
+        "&result=%BD%C5%B0%C7%7C%C0%AF%C2%FB%7C%C1%F8%C7%E0"
+        "&var_kind=111"
+    )
+    
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, 'html.parser')
-            
-            # 가상의 웹페이지 아이템 리스트 추출 구조
-            items = soup.select('.auction-list-item') 
-            for item in items:
-                address = item.select_one('.addr-text').text.strip()
-                
-                # 사용자가 원하는 조건 (영통구/수지구 + 아파트) 필터링
-                if ('수원시 영통구' in address or '용인시 수지구' in address) and '아파트' in address:
-                    case_number = item.select_one('.case-num').text.strip() # 사건번호
-                    appraised_value = item.select_one('.price-appraised').text.strip() # 감정가
-                    min_price = item.select_one('.price-minimum').text.strip() # 최저가
-                    depreciated_count = item.select_one('.depre-count').text.strip() # 유찰 횟수
-                    auction_date = item.select_one('.auc-date').text.strip() # 진행일 (매각기일)
-                    
-                    results.append({
-                        "case_number": case_number,
-                        "address": address,
-                        "appraised_value": appraised_value,
-                        "min_price": min_price,
-                        "depreciated_count": depreciated_count,
-                        "auction_date": auction_date
-                    })
-    except Exception as e:
-        print(f"실제 사이트 크롤링 오류 발생 (시뮬레이션 모드로 전환합니다): {e}")
-
-    # 2. [안전장치 및 테스트 데이터]
-    # 사이트가 접속을 차단하거나 에러가 나서 수집된 데이터가 0건일 경우, 
-    # 자동화 봇이 멈추지 않고 제대로 돌아가는지 확인하기 위해 가상의 매물을 넣어 보냅니다.
-    if not results:
-        results = [
-            {
-                "case_number": "2025타경12345",
-                "address": "경기도 수원시 영통구 이의동 광교자이아파트 101동 1004호",
-                "appraised_value": "1,200,000,000원",
-                "min_price": "840,000,000원",
-                "depreciated_count": "1회 유찰 (70%)",
-                "auction_date": "2026-06-15"
-            },
-            {
-                "case_number": "2025타경67890",
-                "address": "경기도 용인시 수지구 신봉동 신봉마을자이 201동 502호",
-                "appraised_value": "850,000,000원",
-                "min_price": "595,000,000원",
-                "depreciated_count": "1회 유찰 (70%)",
-                "auction_date": "2026-06-18"
-            }
-        ]
+        print("실시간 다음 부동산 경매 페이지를 호출합니다...")
+        response = requests.get(url, headers=headers, timeout=15)
+        response.encoding = 'euc-kr' # 다음 경매 웹페이지는 EUC-KR 인코딩을 사용합니다.
         
-    return results
+        # pandas를 이용해 웹페이지 내부의 테이블(표) 데이터를 리스트로 가져옵니다.
+        dfs = pd.read_html(response.text)
+        if not dfs:
+            print("웹페이지에서 표 데이터를 찾지 못했습니다.")
+            return items
+            
+        df = dfs[0]
+        
+        # 사건번호 컬럼 유효성 검사
+        if '사건번호' not in df.columns:
+            print("원하는 경매 표 구조가 아닙니다.")
+            return items
+            
+        # 데이터 정제 (불필요한 공고 행 제거)
+        df = df[df['사건번호'].notna()]
+        df = df[df['사건번호'] != '가맹점신청'] # 가맹점 광고 행 제외
+        
+        for _, row in df.iterrows():
+            detail_info = str(row.get('상세정보', ''))
+            
+            # 수원시 영통구 및 용인시 수지구 필터링
+            if '수원시 영통구' in detail_info or '용인시 수지구' in detail_info:
+                # 사건번호와 물건 번호가 뭉쳐있을 수 있으므로 공백 단위로 쪼개어 첫 번째 값만 가져옵니다.
+                case_raw = str(row.get('사건번호', '')).split()
+                case_num = case_raw[0] if case_raw else "확인 필요"
+                
+                # 상세정보에서 불필요한 공백을 제거하고 가독성 좋게 변환합니다.
+                address = " ".join(detail_info.split())
+                if address.startswith('아파트'): # 앞쪽의 불필요한 텍스트 제거
+                    address = address[3:].strip()
+                
+                # 감정가, 최저가, 시세 정보 가공 (예: "1,200,000,000 / 840,000,000 / -")
+                prices = str(row.get('감정가,최저가,시세', '')).split('/')
+                appraised = prices[0].strip() if len(prices) > 0 else "정보 없음"
+                minimum = prices[1].strip() if len(prices) > 1 else "정보 없음"
+                
+                # 결과(유찰 횟수 등) 및 매각기일 가공
+                results_date = str(row.get('결과 / 입찰일', '')).split('/')
+                status = results_date[0].strip() if len(results_date) > 0 else "진행"
+                auc_date = results_date[1].strip() if len(results_date) > 1 else "미정"
+                
+                items.append({
+                    "case_number": case_num,
+                    "address": address,
+                    "appraised_value": appraised,
+                    "min_price": minimum,
+                    "depreciated_count": status,
+                    "auction_date": auc_date
+                })
+                
+    except Exception as e:
+        print(f"크롤링 실행 중 에러가 발생했습니다: {e}")
+        
+    return items
 
 def main():
-    print("경매 정보 크롤링을 시작합니다...")
-    items = scrape_auction_data()
+    items = scrape_real_auction_data()
     
     if not items:
-        send_telegram_message("🔍 금일 조건에 맞는 경매 물건을 발견하지 못했습니다.")
+        send_telegram_message("🔍 수원 영통 / 용인 수지 지역에 오늘 진행 중인 아파트 경매 물건이 없습니다.")
         return
         
-    # 텔레그램으로 보낼 메시지 가공 (HTML 태그 지원)
-    message = "<b>📢 오늘의 추천 경매 물건 (수원 영통 / 용인 수지 아파트)</b>\n\n"
+    message = "<b>📢 실시간 추천 법원 경매 물건 (수원 영통 / 용인 수지 아파트)</b>\n"
+    message += f"오늘 조회된 전체 물건 수: {len(items)}건\n\n"
+    
     for i, item in enumerate(items, 1):
         message += f"<b>{i}. {item['address']}</b>\n"
         message += f"• 사건번호: {item['case_number']}\n"
