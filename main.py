@@ -33,10 +33,9 @@ def get_target_auction_data(city, district):
     
     # 한글을 다음 경매 사이트 규격(EUC-KR)에 맞추어 인코딩합니다.
     addr1_enc = urllib.parse.quote('경기', encoding='euc-kr')
-    addr2_enc = urllib.parse.quote(city, encoding='euc-kr') # '수원시' 또는 '용인시'
-    addr3_enc = urllib.parse.quote(district, encoding='euc-kr') # '영통구' 또는 '수지구'
+    addr2_enc = urllib.parse.quote(city, encoding='euc-kr')
+    addr3_enc = urllib.parse.quote(district, encoding='euc-kr')
     
-    # 특정 시/구 검색이 적용된 정밀 주소 구성
     url = (
         "https://auction.realestate.daum.net/auction/search_detail.php"
         f"?addr1={addr1_enc}"
@@ -58,7 +57,6 @@ def get_target_auction_data(city, district):
         if not dfs:
             return items
             
-        # 표 중에서 '사건번호'가 열 이름에 포함된 진짜 데이터 표 찾기
         df = None
         for table in dfs:
             if any('사건번호' in str(col) for col in table.columns):
@@ -68,20 +66,18 @@ def get_target_auction_data(city, district):
         if df is None or df.empty:
             return items
             
-        # 광고 및 불필요 행 데이터 정리
-        df = df[df['사건번호'].notna()]
-        df = df[df['사건번호'] != '가맹점신청']
-        
-        # 컬럼 이름의 띄어쓰기 오차 등을 해결하기 위한 유연한 컬럼 탐색
+        # [수정된 부분] 찾은 컬럼명(col_case)을 활용하여 안전하게 광고 행 등을 정리합니다.
         col_case = [c for c in df.columns if '사건번호' in str(c)][0]
         col_detail = [c for c in df.columns if '상세정보' in str(c)][0]
         col_price = [c for c in df.columns if '감정가' in str(c)][0]
         col_date = [c for c in df.columns if '입찰' in str(c) or '결과' in str(c)][0]
         
+        df = df[df[col_case].notna()]
+        df = df[df[col_case] != '가맹점신청']
+        
         for _, row in df.iterrows():
             detail_info = str(row.get(col_detail, ''))
             
-            # 주소 정보에 내가 찾는 구가 확실히 매칭되는지 재검증
             if district in detail_info:
                 case_raw = str(row.get(col_case, '')).split()
                 case_num = case_raw[0] if case_raw else "확인 필요"
@@ -109,14 +105,13 @@ def get_target_auction_data(city, district):
                 })
                 
     except Exception as e:
-        print(f"{city} {district} 경매 물건 조회 실패: {e}")
+        print(f"{city} {district} 경매 물건 조회 중 오류: {e}")
         
     return items
 
 def main():
     print("수원시 영통구 및 용인시 수지구의 경매 정보를 개별 수집합니다...")
     
-    # 두 개의 목표 지역 데이터를 각각 독립적으로 수집하여 병합합니다.
     target_items = []
     target_items.extend(get_target_auction_data("수원시", "영통구"))
     target_items.extend(get_target_auction_data("용인시", "수지구"))
@@ -126,7 +121,7 @@ def main():
         return
         
     message = "<b>📢 실시간 법원 경매 정보 (수원 영통 / 용인 수지 아파트)</b>\n"
-    message += f"조회된 물건 수: {len(target_items)}건\n\n"
+    message += f"현재 진행 중인 물건: {len(target_items)}건\n\n"
     
     for i, item in enumerate(target_items, 1):
         message += f"<b>{i}. {item['address']}</b>\n"
